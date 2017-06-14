@@ -28,6 +28,8 @@ SCRIPT_DIR="$(cd $(dirname "$(readlinkf "${BASH_SOURCE}")"); pwd)"
 virsh="${SCRIPT_DIR}/../../examples/virsh.sh"
 vmssh="${SCRIPT_DIR}/../../examples/vmssh.sh"
 
+source "${SCRIPT_DIR}/../../examples/util.sh"
+
 # provide path for kubectl
 export PATH="${HOME}/.kubeadm-dind-cluster:${PATH}"
 
@@ -47,6 +49,42 @@ function wait-for-pod {
     echo -n "." >&2
   done
   echo >&2
+}
+
+function wait-for-pod-delete {
+  local pod="${1}"
+  local n=180
+  while kubectl get pod ${pod} >&/dev/null; do
+    if ((--n == 0)); then
+      echo "Timed out waiting for pod removal" >&2
+      exit 1
+    fi
+    sleep 1
+    echo -n "." >&2
+  done
+  echo >&2
+}
+
+function check-all-cleaned {
+  local podID="${1}"
+  # TODO: get rid of this sleep
+  # for some reason even after 'kubectl get pod' check returns 'NOT FOUND'
+  # domain remains defined for some time
+  sleep 60
+  if "${virsh}" list --all | grep ${podID}; then
+    echo "domain ${podID} still listed after deletion" >&2
+    exit 1
+  fi
+
+  if "${virsh}" vol-list --pool volumes | grep ${podID}; then
+    echo "volumes for domain ${podID} still listed after deletion" >&2
+    exit 1
+  fi
+
+   if "${virsh}" secret-list | grep ceph; then
+     echo "secret for domain ${podID} still listed after deletion" >&2
+     exit 1
+   fi
 }
 
 function wait-for-ssh {
@@ -187,22 +225,15 @@ verify-cpu-count 1
 
 # test pod removal
 
-kubectl delete pod cirros-vm
-n=180
-while kubectl get pod cirros-vm >&/dev/null; do
-  if ((--n == 0)); then
-    echo "Timed out waiting for pod removal" >&2
-    exit 1
-  fi
-  sleep 1
-  echo -n "." >&2
-done
-echo >&2
+podID=$(get_pod_domain_id @cirros-vm-rbd | sed s/-cirros-vm-rbd//)
+kubectl delete pod cirros-vm-rbd
+wait-for-pod-delete cirros-vm-rbd
+check-all-cleaned ${podID}
 
-if "${virsh}" list --name|grep -- '-cirros-vm$'; then
-  echo "cirros-vm domain still listed after deletion" >&2
-  exit 1
-fi
+podID=$(get_pod_domain_id @cirros-vm | sed s/-cirros-vm//)
+kubectl delete pod cirros-vm
+wait-for-pod-delete cirros-vm
+check-all-cleaned ${podID}
 
 # test changing vcpu count
 
